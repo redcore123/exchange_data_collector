@@ -6,6 +6,7 @@
 - 라이센스 검증 없음 (인터넷 가능 PC 전용 배포용)
 """
 
+import traceback
 from datetime import datetime, timezone, timedelta
 
 import pandas as pd
@@ -57,12 +58,12 @@ def get_user_friendly_error_message(exc: Exception) -> tuple[str, str | None]:
         if status == 404:
             return (
                 "요청한 데이터를 찾을 수 없습니다.",
-                "거래 페어(코인/결제통화) 또는 기간이 해당 거래소에서 지원되는지 확인해 주세요.",
+                "입력하신 정보를 다시 한번 확인해 주세요. 해당 코인의 거래쌍이 해당 거래소에 상장되어 있는지 확인해 주세요.",
             )
         if status == 400:
             return (
                 "요청 형식이 잘못되었습니다.",
-                "선택한 거래소·코인·기간·구간이 올바른지 확인해 주세요.",
+                "입력하신 정보를 다시 한번 확인해 주세요. 해당 코인의 거래쌍이 해당 거래소에 상장되어 있는지 확인해 주세요.",
             )
         if status and 500 <= status < 600:
             return (
@@ -70,8 +71,8 @@ def get_user_friendly_error_message(exc: Exception) -> tuple[str, str | None]:
                 "잠시 후 다시 시도해 주세요.",
             )
         return (
-            "거래소 API 요청 중 오류가 발생했습니다.",
-            "아래 '오류 상세'를 참고하거나, 잠시 후 다시 시도해 주세요.",
+            "데이터를 가져오는 중 문제가 발생했습니다.",
+            "입력하신 정보를 다시 한번 확인해 주세요. 해당 코인의 거래쌍이 해당 거래소에 상장되어 있는지 확인해 주세요.",
         )
     if isinstance(exc, requests.exceptions.RequestException):
         return (
@@ -82,7 +83,7 @@ def get_user_friendly_error_message(exc: Exception) -> tuple[str, str | None]:
     # 그 외 예외: 짧게 요약하고 상세는 expander에
     return (
         "데이터 수집 중 오류가 발생했습니다.",
-        "아래 '오류 상세'에서 원인을 확인할 수 있습니다.",
+        "입력하신 정보를 다시 한번 확인해 주세요. 해당 코인의 거래쌍이 해당 거래소에 상장되어 있는지 확인해 주세요.",
     )
 
 
@@ -344,10 +345,21 @@ def show_page():
                     else None
                 )
                 with st.expander("오류 상세 (개발자/고급 사용자용)", expanded=False):
+                    st.caption("예외 정보")
                     st.text(f"예외 유형: {type(e).__name__}")
                     st.text(f"원본 메시지: {e}")
+                    st.caption("요청 정보 (디버깅용)")
+                    st.text(
+                        f"거래소: {exchange_id} | 코인: {coin_base} | 결제통화: {quote} | "
+                        f"구간: {interval_value}{interval_unit}"
+                    )
+                    st.text(
+                        f"시작: {start_dt.isoformat()} | 종료: {end_dt.isoformat()}"
+                    )
+                    st.caption("Traceback")
+                    st.code(traceback.format_exc(), language="text")
                     if dbg:
-                        st.caption("마지막 API 호출 진단 정보")
+                        st.caption("마지막 API 호출 진단 정보 (last_debug)")
                         st.json(dbg)
                 st.stop()
 
