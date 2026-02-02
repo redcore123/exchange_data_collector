@@ -21,14 +21,14 @@ from collector_ui import show_page as show_exchange_collector
 from price_data_collector_ui import show_page as show_price_collector
 
 st.set_page_config(
-    page_title="시세 데이터 수집",
+    page_title="가상자산 시세 데이터 수집",
     page_icon="📊",
     layout="wide",
 )
 
 with st.sidebar:
     page = option_menu(
-        menu_title="시세 데이터 수집",
+        menu_title="가상자산 시세 데이터 수집",
         options=[
             "타거래소 데이터 수집",
             "원화가치 환산용 시세 데이터 수집",
