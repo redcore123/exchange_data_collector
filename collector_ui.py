@@ -6,12 +6,10 @@
 - 라이센스 검증 없음 (인터넷 가능 PC 전용 배포용)
 """
 
-import traceback
 from datetime import datetime, timezone, timedelta
 
 import pandas as pd
 import plotly.graph_objects as go
-import requests
 from plotly.subplots import make_subplots
 import streamlit as st
 
@@ -23,68 +21,6 @@ from exchange_apis import (
 from logger_simple import get_logger
 
 logger = get_logger(__name__)
-
-
-def get_user_friendly_error_message(exc: Exception) -> tuple[str, str | None]:
-    """일반 사용자용 한글 오류 메시지와 (선택) 추가 안내를 반환합니다.
-
-    Returns:
-        (메인 메시지, 추가 안내 또는 None)
-    """
-    err_text = str(exc).strip()
-    # 이미 한글 안내가 포함된 ValueError(거래소 API에서 발생)는 그대로 노출
-    if isinstance(exc, ValueError) and any(
-        x in err_text for x in ("확인해주세요", "확인해 주세요", "지원하지 않", "올바른지")
-    ):
-        # 너무 길면 첫 문장만 메인으로, 나머지는 상세로
-        if len(err_text) > 200:
-            first = err_text.split(". ")[0] + "."
-            return first, err_text
-        return err_text, None
-
-    if isinstance(exc, requests.exceptions.ConnectionError):
-        return (
-            "거래소 서버에 연결할 수 없습니다.",
-            "인터넷 연결을 확인한 뒤 다시 시도해 주세요.",
-        )
-    if isinstance(exc, requests.exceptions.Timeout):
-        return (
-            "요청 시간이 초과되었습니다.",
-            "잠시 후 다시 시도해 주세요. 거래소가 일시적으로 느릴 수 있습니다.",
-        )
-    if isinstance(exc, requests.exceptions.HTTPError):
-        code = getattr(exc, "response", None)
-        status = getattr(code, "status_code", None) if code else None
-        if status == 404:
-            return (
-                "요청한 데이터를 찾을 수 없습니다.",
-                "입력하신 정보를 다시 한번 확인해 주세요. 해당 코인의 거래쌍이 해당 거래소에 상장되어 있는지 확인해 주세요.",
-            )
-        if status == 400:
-            return (
-                "요청 형식이 잘못되었습니다.",
-                "입력하신 정보를 다시 한번 확인해 주세요. 해당 코인의 거래쌍이 해당 거래소에 상장되어 있는지 확인해 주세요.",
-            )
-        if status and 500 <= status < 600:
-            return (
-                "거래소 서버에서 일시적인 오류가 발생했습니다.",
-                "잠시 후 다시 시도해 주세요.",
-            )
-        return (
-            "데이터를 가져오는 중 문제가 발생했습니다.",
-            "입력하신 정보를 다시 한번 확인해 주세요. 해당 코인의 거래쌍이 해당 거래소에 상장되어 있는지 확인해 주세요.",
-        )
-    if isinstance(exc, requests.exceptions.RequestException):
-        return (
-            "거래소와 통신하는 중 오류가 발생했습니다.",
-            "인터넷 연결을 확인한 뒤 다시 시도해 주세요.",
-        )
-
-    # 그 외 예외: 짧게 요약하고 상세는 expander에
-    return (
-        "데이터 수집 중 오류가 발생했습니다.",
-        "입력하신 정보를 다시 한번 확인해 주세요. 해당 코인의 거래쌍이 해당 거래소에 상장되어 있는지 확인해 주세요.",
-    )
 
 
 def show_page():
@@ -334,32 +270,15 @@ def show_page():
                 )
             except Exception as e:
                 logger.error(f"데이터 수집 중 오류 발생: {e}", exc_info=True)
-                main_msg, hint = get_user_friendly_error_message(e)
-                st.error(f"**{main_msg}**")
-                if hint:
-                    st.info(hint)
+                st.error(f"수집 중 오류: {e}")
                 api_dbg = EXCHANGE_APIS.get(exchange_id)
                 dbg = (
                     getattr(api_dbg, "last_debug", None)
                     if api_dbg
                     else None
                 )
-                with st.expander("오류 상세 (개발자/고급 사용자용)", expanded=False):
-                    st.caption("예외 정보")
-                    st.text(f"예외 유형: {type(e).__name__}")
-                    st.text(f"원본 메시지: {e}")
-                    st.caption("요청 정보 (디버깅용)")
-                    st.text(
-                        f"거래소: {exchange_id} | 코인: {coin_base} | 결제통화: {quote} | "
-                        f"구간: {interval_value}{interval_unit}"
-                    )
-                    st.text(
-                        f"시작: {start_dt.isoformat()} | 종료: {end_dt.isoformat()}"
-                    )
-                    st.caption("Traceback")
-                    st.code(traceback.format_exc(), language="text")
-                    if dbg:
-                        st.caption("마지막 API 호출 진단 정보 (last_debug)")
+                if dbg:
+                    with st.expander("진단 정보(마지막 API 호출)", expanded=True):
                         st.json(dbg)
                 st.stop()
 
@@ -692,6 +611,5 @@ def show_page():
         )
         st.caption(f"파일명: {filename}")
         st.info(
-            "다운로드한 CSV 파일을 **USB 등으로 오프라인 SPPO 환경**으로 가져간 뒤, "
-            "SPPO 앱의 **차트 분석 → 타거래소와 데이터 비교** 메뉴에서 업로드해 사용하세요."
+            "다운로드한 CSV 파일을 SPPO 앱의 **차트 분석 → 타거래소와 데이터 비교** 메뉴에서 업로드해 사용하세요."
         )
