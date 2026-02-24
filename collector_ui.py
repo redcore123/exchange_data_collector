@@ -15,12 +15,71 @@ import streamlit as st
 
 from exchange_apis import (
     EXCHANGE_APIS,
+    OHLCV_COLUMNS,
     fetch_ohlcv,
     get_supported_exchanges,
 )
 from logger_simple import get_logger
 
 logger = get_logger(__name__)
+
+
+def fill_missing_ohlcv_gaps(
+    df: pd.DataFrame,
+    start_dt: datetime,
+    end_dt: datetime,
+    interval_unit: str,
+    interval_value: int,
+) -> pd.DataFrame:
+    """
+    요청 구간에서 API에 데이터가 없는(거래량 없는) 구간을
+    직전 구간의 close로 OHLC를 채우고, 거래량을 0으로 채워 연속된 표/차트를 만듭니다.
+    """
+    if df is None or df.empty or "datetime_utc" not in df.columns or "close" not in df.columns:
+        return df
+
+    if interval_unit == "minute":
+        delta = timedelta(minutes=interval_value)
+    elif interval_unit == "hour":
+        delta = timedelta(hours=interval_value)
+    elif interval_unit == "day":
+        delta = timedelta(days=interval_value)
+    elif interval_unit == "second":
+        delta = timedelta(seconds=interval_value)
+    else:
+        return df
+
+    expected_times = []
+    t = start_dt
+    while t <= end_dt:
+        expected_times.append(t)
+        t = t + delta
+
+    if not expected_times:
+        return df
+
+    if "volume" not in df.columns:
+        df = df.copy()
+        df["volume"] = 0.0
+
+    df_sorted = df.sort_values("datetime_utc").reset_index(drop=True)
+    expected_df = pd.DataFrame({"datetime_utc": expected_times})
+    merged = expected_df.merge(
+        df_sorted[
+            [c for c in OHLCV_COLUMNS if c in df_sorted.columns]
+        ],
+        on="datetime_utc",
+        how="left",
+    )
+    merged["close"] = merged["close"].ffill()
+    merged["close"] = merged["close"].bfill()
+    mask = merged["open"].isna()
+    merged.loc[mask, "open"] = merged.loc[mask, "close"]
+    merged.loc[mask, "high"] = merged.loc[mask, "close"]
+    merged.loc[mask, "low"] = merged.loc[mask, "close"]
+    merged.loc[mask, "volume"] = 0.0
+    out_cols = [c for c in OHLCV_COLUMNS if c in merged.columns]
+    return merged[out_cols].reset_index(drop=True)
 
 
 def show_page():
@@ -270,7 +329,10 @@ def show_page():
                 )
             except Exception as e:
                 logger.error(f"데이터 수집 중 오류 발생: {e}", exc_info=True)
-                st.error(f"수집 중 오류: {e}")
+                err_msg = str(e).strip()
+                st.error("**데이터 수집 오류**")
+                st.code(err_msg, language=None)
+                st.caption("위 메시지는 거래소 API에서 반환된 내용입니다.")
                 api_dbg = EXCHANGE_APIS.get(exchange_id)
                 dbg = (
                     getattr(api_dbg, "last_debug", None)
@@ -278,7 +340,7 @@ def show_page():
                     else None
                 )
                 if dbg:
-                    with st.expander("진단 정보(마지막 API 호출)", expanded=True):
+                    with st.expander("진단 정보(마지막 API 호출)", expanded=False):
                         st.json(dbg)
                 st.stop()
 
@@ -294,6 +356,10 @@ def show_page():
                 with st.expander("진단 정보(마지막 API 호출)", expanded=True):
                     st.json(dbg)
             st.stop()
+
+        df = fill_missing_ohlcv_gaps(
+            df, start_dt, end_dt, interval_unit, int(interval_value)
+        )
 
         interval_label = f"{interval_value}{interval_type}"
         kst = timezone(timedelta(hours=9))
@@ -363,48 +429,19 @@ def show_page():
                 f"상위 100건만 표시. 전체 {len(df):,}건은 CSV 다운로드로 저장됩니다."
             )
 
-        # 누락된 시간대 감지
-        if len(df) > 0 and "datetime_utc" in df.columns:
-            df_sorted = df.sort_values("datetime_utc").reset_index(drop=True)
-            if interval_unit == "minute":
-                expected_interval = timedelta(minutes=interval_value)
-            elif interval_unit == "hour":
-                expected_interval = timedelta(hours=interval_value)
-            elif interval_unit == "day":
-                expected_interval = timedelta(days=interval_value)
-            elif interval_unit == "second":
-                expected_interval = timedelta(seconds=interval_value)
-            else:
-                expected_interval = None
-            if expected_interval:
-                missing_intervals = []
-                for i in range(len(df_sorted) - 1):
-                    current_dt = df_sorted.iloc[i]["datetime_utc"]
-                    next_dt = df_sorted.iloc[i + 1]["datetime_utc"]
-                    gap = next_dt - current_dt
-                    if gap > expected_interval * 1.5:
-                        missing_start = current_dt + expected_interval
-                        while missing_start < next_dt:
-                            missing_intervals.append(missing_start)
-                            missing_start += expected_interval
-                if missing_intervals:
-                    missing_kst = [
-                        dt.astimezone(kst) for dt in missing_intervals
-                    ]
-                    missing_str = ", ".join(
-                        [
-                            dt.strftime("%H:%M")
-                            for dt in missing_kst[:20]
-                        ]
-                    )
-                    if len(missing_intervals) > 20:
-                        missing_str += (
-                            f" ... 외 {len(missing_intervals) - 20}개"
-                        )
-                    st.warning(
-                        f"⚠️ **누락된 시간대 감지**: {len(missing_intervals)}개의 시간대에 데이터가 없습니다.\n\n"
-                        f"누락된 시간 (KST): {missing_str}"
-                    )
+        # 데이터 없던 구간 채움 안내 (직전 종가 + 거래량 0으로 채운 구간 수)
+        if len(df) > 0 and "volume" in df.columns and "open" in df.columns:
+            filled = (
+                (df["volume"] == 0)
+                & (df["open"] == df["close"])
+                & (df["open"] == df["high"])
+                & (df["open"] == df["low"])
+            )
+            filled_count = filled.sum()
+            if filled_count > 0:
+                st.info(
+                    f"**{int(filled_count)}개** 구간에 데이터가 없어 직전 종가로 OHLC를 채우고 거래량을 0으로 넣었습니다."
+                )
 
         # OHLCV 차트
         if len(df) > 0 and "datetime_utc" in df.columns:
