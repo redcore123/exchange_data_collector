@@ -117,7 +117,7 @@ def show_page():
             st.caption("코인")
 
         with c3:
-            quote_options = ["KRW", "USDT", "USD", "BUSD"]
+            quote_options = ["KRW", "USDT", "USD", "BUSD", "BTC"]
             quote = st.selectbox(
                 "결제통화",
                 quote_options,
