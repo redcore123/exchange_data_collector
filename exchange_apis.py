@@ -354,13 +354,17 @@ class BybitAPI(BaseExchangeAPI):
         end_ms = int(end_dt.timestamp() * 1000)
         url = f"{self.base_url}/kline"
         all_rows = []
-        while start_ms < end_ms:
+        
+        # Bybit는 최신 데이터부터 역순으로 반환하므로, end부터 시작해서 start까지 역으로 수집
+        current_end = end_ms
+        
+        while current_end > start_ms:
             params = {
                 "category": "spot",
                 "symbol": symbol,
                 "interval": interval_str,
                 "start": start_ms,
-                "end": end_ms,
+                "end": current_end,
                 "limit": 1000,
             }
             r = requests.get(url, params=params, timeout=30)
@@ -371,6 +375,7 @@ class BybitAPI(BaseExchangeAPI):
             lst = data.get("result", {}).get("list", [])
             if not lst:
                 break
+            
             for row in lst:
                 # Bybit: [start, open, high, low, close, volume, turn over]
                 ts_ms = int(row[0])
@@ -385,8 +390,17 @@ class BybitAPI(BaseExchangeAPI):
                         "volume": float(row[5]),
                     }
                 )
-            start_ms = int(lst[0][0]) + 1
-        return pd.DataFrame(all_rows, columns=OHLCV_COLUMNS)
+            
+            # Bybit는 역순으로 반환하므로, 가장 오래된 데이터(마지막 항목)의 시간을 다음 end로 사용
+            oldest_ts = int(lst[-1][0])
+            if oldest_ts >= current_end:
+                # 무한 루프 방지: 시간이 진행되지 않으면 종료
+                break
+            current_end = oldest_ts - 1
+        
+        df = pd.DataFrame(all_rows, columns=OHLCV_COLUMNS)
+        # 시간순으로 정렬
+        return df.sort_values("datetime_utc").reset_index(drop=True) if not df.empty else df
 
 
 class OKXAPI(BaseExchangeAPI):
@@ -503,38 +517,181 @@ class CoinbaseAPI(BaseExchangeAPI):
     ) -> pd.DataFrame:
         granularity = self.get_interval_param(interval_unit, interval_value)
         if granularity is None:
-            return pd.DataFrame(columns=OHLCV_COLUMNS)
-        product_id = self.get_symbol(base, quote)
-        start_iso = start_dt.strftime("%Y-%m-%dT%H:%M:%S")
-        end_iso = end_dt.strftime("%Y-%m-%dT%H:%M:%S")
-        url = f"{self.base_url}/products/{product_id}/candles"
-        params = {
-            "start": start_iso,
-            "end": end_iso,
-            "granularity": granularity,
-        }
-        r = requests.get(url, params=params, timeout=30)
-        r.raise_for_status()
-        data = r.json()
-        if not data or (isinstance(data, dict) and data.get("message")):
-            return pd.DataFrame(columns=OHLCV_COLUMNS)
-        out = []
-        for row in data:
-            # [ time, low, high, open, close, volume ]
-            ts = int(row[0])
-            dt = _parse_ts_ms(ts)
-            out.append(
-                {
-                    "datetime_utc": dt,
-                    "open": float(row[3]),
-                    "high": float(row[2]),
-                    "low": float(row[1]),
-                    "close": float(row[4]),
-                    "volume": float(row[5]),
-                }
+            self._set_last_debug(
+                exchange=self.name,
+                error=f"지원하지 않는 구간: {interval_unit} {interval_value}",
+                requested_start_utc=start_dt,
+                requested_end_utc=end_dt,
             )
-        df = pd.DataFrame(out, columns=OHLCV_COLUMNS)
-        return df.sort_values("datetime_utc").reset_index(drop=True) if not df.empty else df
+            return pd.DataFrame(columns=OHLCV_COLUMNS)
+        
+        product_id = self.get_symbol(base, quote)
+        url = f"{self.base_url}/products/{product_id}/candles"
+        
+        # Coinbase는 최대 300개 캔들만 반환하므로 구간을 나눠서 요청
+        max_candles = 300
+        interval_seconds = granularity
+        max_duration_seconds = max_candles * interval_seconds
+        
+        all_rows = []
+        current_start = start_dt
+        raw_min_utc = None
+        raw_max_utc = None
+        total_raw_count = 0
+        last_http_status = None
+        
+        try:
+            while current_start < end_dt:
+                # 최대 300개 캔들 범위로 제한
+                current_end = min(
+                    current_start + timedelta(seconds=max_duration_seconds),
+                    end_dt
+                )
+                
+                start_iso = current_start.strftime("%Y-%m-%dT%H:%M:%S")
+                end_iso = current_end.strftime("%Y-%m-%dT%H:%M:%S")
+                
+                params = {
+                    "start": start_iso,
+                    "end": end_iso,
+                    "granularity": granularity,
+                }
+                
+                r = requests.get(url, params=params, timeout=30)
+                last_http_status = r.status_code
+                
+                # Coinbase API 오류 처리
+                if r.status_code == 400:
+                    try:
+                        error_data = r.json()
+                        error_msg = error_data.get("message", "")
+                        
+                        self._set_last_debug(
+                            exchange=self.name,
+                            url=url,
+                            params=params,
+                            http_status=last_http_status,
+                            api_status="error",
+                            error=error_msg,
+                            requested_start_utc=start_dt,
+                            requested_end_utc=end_dt,
+                        )
+                        
+                        # 잘못된 product_id인 경우
+                        if "notfound" in error_msg.lower() or "invalid" in error_msg.lower():
+                            raise ValueError(
+                                f"Coinbase에서 지원하지 않는 거래 페어입니다: {product_id} ({base}/{quote}). "
+                                f"Coinbase는 주로 USD, EUR, GBP 마켓을 지원합니다. "
+                                f"오류 상세: {error_msg}"
+                            )
+                        else:
+                            raise ValueError(
+                                f"Coinbase API 오류 (400): {error_msg}. "
+                                f"요청 파라미터: product_id={product_id}, start={start_iso}, end={end_iso}, granularity={granularity}"
+                            )
+                    except ValueError:
+                        raise
+                    except (KeyError, TypeError):
+                        self._set_last_debug(
+                            exchange=self.name,
+                            url=url,
+                            params=params,
+                            http_status=last_http_status,
+                            api_status="error",
+                            error=f"400 Bad Request: {r.text[:200]}",
+                            requested_start_utc=start_dt,
+                            requested_end_utc=end_dt,
+                        )
+                        raise ValueError(
+                            f"Coinbase API 오류 (400 Bad Request): {product_id} 페어가 지원되지 않거나 "
+                            f"요청 파라미터가 잘못되었습니다. 응답: {r.text[:200]}"
+                        )
+                
+                r.raise_for_status()
+                data = r.json()
+                
+                if not data:
+                    break
+                
+                if isinstance(data, dict) and data.get("message"):
+                    error_msg = data.get("message")
+                    self._set_last_debug(
+                        exchange=self.name,
+                        url=url,
+                        params=params,
+                        http_status=last_http_status,
+                        api_status="error",
+                        error=error_msg,
+                        requested_start_utc=start_dt,
+                        requested_end_utc=end_dt,
+                    )
+                    raise ValueError(f"Coinbase API 오류: {error_msg}")
+                
+                total_raw_count += len(data)
+                
+                for row in data:
+                    try:
+                        # [ time, low, high, open, close, volume ]
+                        ts = int(row[0])
+                        dt = _parse_ts_ms(ts)
+                        
+                        if dt:
+                            if raw_min_utc is None or dt < raw_min_utc:
+                                raw_min_utc = dt
+                            if raw_max_utc is None or dt > raw_max_utc:
+                                raw_max_utc = dt
+                        
+                        all_rows.append(
+                            {
+                                "datetime_utc": dt,
+                                "open": float(row[3]),
+                                "high": float(row[2]),
+                                "low": float(row[1]),
+                                "close": float(row[4]),
+                                "volume": float(row[5]),
+                            }
+                        )
+                    except (IndexError, ValueError, TypeError):
+                        continue
+                
+                # 다음 구간으로 이동
+                current_start = current_end
+            
+            df = pd.DataFrame(all_rows, columns=OHLCV_COLUMNS)
+            df = df.sort_values("datetime_utc").reset_index(drop=True) if not df.empty else df
+            
+            self._set_last_debug(
+                exchange=self.name,
+                url=url,
+                params={"product_id": product_id, "granularity": granularity, "note": "페이지네이션 적용"},
+                http_status=last_http_status,
+                api_status="success" if len(df) > 0 else "no_data",
+                raw_count=total_raw_count,
+                raw_min_utc=raw_min_utc,
+                raw_max_utc=raw_max_utc,
+                requested_start_utc=start_dt,
+                requested_end_utc=end_dt,
+                filtered_count=len(df),
+            )
+            
+            return df
+            
+        except ValueError:
+            raise
+        except Exception as e:
+            self._set_last_debug(
+                exchange=self.name,
+                url=url,
+                params={"product_id": product_id, "granularity": granularity},
+                http_status=last_http_status,
+                error=str(e),
+                requested_start_utc=start_dt,
+                requested_end_utc=end_dt,
+            )
+            raise ValueError(
+                f"Coinbase API 요청 중 오류 발생: {str(e)}. "
+                f"요청 파라미터: product_id={product_id}, granularity={granularity}"
+            )
 
 
 class KuCoinAPI(BaseExchangeAPI):
@@ -1196,7 +1353,12 @@ class CoinoneAPI(BaseExchangeAPI):
 
 
 class KorbitAPI(BaseExchangeAPI):
-    """코빗 공개 API. interval: 1, 5, 15, 30, 60, 240, 1D, 1W. 인증 없이 시세 조회 가능."""
+    """코빗 공개 API. interval: 1, 5, 15, 30, 60, 240, 1D, 1W. 인증 없이 시세 조회 가능.
+    
+    **중요**: 코빗 API는 과거 데이터 조회에 제한이 있습니다.
+    - API를 통한 조회: 최근 34일 이내 데이터만 제공
+    - 더 오래된 데이터는 제공되지 않음
+    """
 
     name = "Korbit"
     base_url = "https://api.korbit.co.kr/v2"
@@ -1307,6 +1469,21 @@ class KorbitAPI(BaseExchangeAPI):
                     if len(all_rows) == 0:
                         raw_preview = str(data)[:500] if data else ""
                         df = pd.DataFrame(all_rows, columns=OHLCV_COLUMNS)
+                        
+                        # 과거 데이터 제한 확인
+                        now_utc = datetime.now(timezone.utc)
+                        days_ago = (now_utc - start_dt).days
+                        
+                        if days_ago > 34:
+                            note = (
+                                f"코빗 API는 최근 34일 이내의 데이터만 제공합니다.\n"
+                                f"요청한 시작 시간: {start_dt.strftime('%Y-%m-%d %H:%M:%S')} UTC ({days_ago}일 전)\n"
+                                f"API 제공 범위: 최근 34일 이내\n\n"
+                                f"더 오래된 과거 데이터가 필요하시면 다른 거래소를 사용하세요 (Binance, Bybit, OKX 등)"
+                            )
+                        else:
+                            note = "success=True, data=[] → 요청 기간이 코빗 제공 범위를 벗어났을 수 있음. 더 최근 기간으로 조회해 보세요."
+                        
                         self._set_last_debug(
                             exchange=self.name,
                             url=url,
@@ -1320,7 +1497,7 @@ class KorbitAPI(BaseExchangeAPI):
                             requested_end_utc=end_dt,
                             filtered_count=0,
                             raw_response_preview=raw_preview,
-                            note="success=True, data=[] → 요청 기간이 코빗 제공 범위를 벗어났을 수 있음. 더 최근 기간으로 조회해 보세요.",
+                            note=note,
                         )
                         return df
                     break
@@ -1429,7 +1606,259 @@ class KorbitAPI(BaseExchangeAPI):
             raise
 
 
-# --- 해외 거래소 추가: Gate.io, HTX ---
+# --- 해외 거래소 추가: Gate.io, HTX, MEXC ---
+
+
+class MEXCAPI(BaseExchangeAPI):
+    """MEXC API v3 (Spot) 공개 캔들.
+    
+    MEXC는 Binance와 유사한 API 구조를 사용합니다.
+    Market Data API는 공개 API로, API key 인증이 필요하지 않습니다.
+    
+    **중요**: MEXC API는 과거 데이터 조회에 제한이 있습니다.
+    - API를 통한 조회: 최근 30일 이내 데이터만 제공
+    - 더 오래된 데이터: CSV 다운로드 페이지에서 제공 (2023년 1월 1일부터)
+      https://www.mexc.co/zh-CN/market-data-download
+    """
+
+    name = "MEXC"
+    base_url = "https://api.mexc.com/api/v3"
+
+    # MEXC interval: 1m, 5m, 15m, 30m, 60m, 4h, 1d, 1W, 1M
+    INTERVAL_MAP = {
+        ("minute", 1): "1m",
+        ("minute", 5): "5m",
+        ("minute", 15): "15m",
+        ("minute", 30): "30m",
+        ("hour", 1): "60m",
+        ("hour", 4): "4h",
+        ("day", 1): "1d",
+        ("day", 7): "1W",
+    }
+
+    def get_interval_param(self, interval_unit: str, interval_value: int) -> Optional[str]:
+        return self.INTERVAL_MAP.get((interval_unit, interval_value))
+
+    def get_symbol(self, base: str, quote: str) -> str:
+        # MEXC spot: BTCUSDT (대문자, 구분자 없음)
+        return f"{base.upper()}{quote.upper()}"
+
+    def fetch_klines(
+        self,
+        base: str,
+        quote: str,
+        start_dt: datetime,
+        end_dt: datetime,
+        interval_unit: str,
+        interval_value: int,
+    ) -> pd.DataFrame:
+        interval_str = self.get_interval_param(interval_unit, interval_value)
+        if not interval_str:
+            self._set_last_debug(
+                exchange=self.name,
+                error=f"지원하지 않는 구간: {interval_unit} {interval_value}",
+                requested_start_utc=start_dt,
+                requested_end_utc=end_dt,
+            )
+            return pd.DataFrame(columns=OHLCV_COLUMNS)
+
+        symbol = self.get_symbol(base, quote)
+        url = f"{self.base_url}/klines"
+        start_ms = int(start_dt.timestamp() * 1000)
+        end_ms = int(end_dt.timestamp() * 1000)
+        all_rows = []
+        raw_min_utc = None
+        raw_max_utc = None
+        last_http_status = None
+        total_raw_count = 0
+
+        # MEXC는 startTime/endTime + limit(최대 500) 지원
+        # Binance와 유사한 방식으로 페이지네이션
+        try:
+            while start_ms < end_ms:
+                params = {
+                    "symbol": symbol,
+                    "interval": interval_str,
+                    "startTime": start_ms,
+                    "endTime": end_ms,
+                    "limit": 500,
+                }
+                
+                r = requests.get(url, params=params, timeout=30)
+                last_http_status = r.status_code
+                
+                # MEXC API 오류 처리
+                if r.status_code == 400:
+                    try:
+                        error_data = r.json()
+                        error_code = error_data.get("code")
+                        error_msg = error_data.get("msg", "")
+                        
+                        self._set_last_debug(
+                            exchange=self.name,
+                            url=url,
+                            params=params,
+                            http_status=last_http_status,
+                            api_status="error",
+                            error=f"{error_msg} (코드: {error_code})",
+                            requested_start_utc=start_dt,
+                            requested_end_utc=end_dt,
+                        )
+                        
+                        # 잘못된 심볼인 경우
+                        if error_code == 10007 or "symbol" in error_msg.lower():
+                            raise ValueError(
+                                f"MEXC에서 지원하지 않는 거래 페어입니다: {symbol} ({base}/{quote}). "
+                                f"MEXC Spot 시장에서 거래 가능한 페어인지 확인해주세요. "
+                                f"오류 상세: {error_msg} (코드: {error_code})"
+                            )
+                        else:
+                            raise ValueError(
+                                f"MEXC API 오류 (400): {error_msg} (코드: {error_code}). "
+                                f"요청 파라미터: symbol={symbol}, interval={interval_str}, "
+                                f"startTime={start_ms}, endTime={end_ms}"
+                            )
+                    except ValueError:
+                        raise
+                    except (KeyError, TypeError):
+                        self._set_last_debug(
+                            exchange=self.name,
+                            url=url,
+                            params=params,
+                            http_status=last_http_status,
+                            api_status="error",
+                            error=f"400 Bad Request: {r.text[:200]}",
+                            requested_start_utc=start_dt,
+                            requested_end_utc=end_dt,
+                        )
+                        raise ValueError(
+                            f"MEXC API 오류 (400 Bad Request): {symbol} 페어가 지원되지 않거나 "
+                            f"요청 파라미터가 잘못되었습니다. 응답: {r.text[:200]}"
+                        )
+                
+                r.raise_for_status()
+                data = r.json()
+                
+                if not data or not isinstance(data, list):
+                    # 첫 번째 요청에서 데이터가 없으면 상세 정보 기록
+                    if total_raw_count == 0:
+                        self._set_last_debug(
+                            exchange=self.name,
+                            url=url,
+                            params=params,
+                            http_status=last_http_status,
+                            api_status="no_data",
+                            raw_count=0,
+                            raw_min_utc=None,
+                            raw_max_utc=None,
+                            requested_start_utc=start_dt,
+                            requested_end_utc=end_dt,
+                            filtered_count=0,
+                            note=f"MEXC API가 빈 배열을 반환했습니다. 응답 타입: {type(data).__name__}, 응답 내용: {str(data)[:200]}",
+                        )
+                    break
+                
+                total_raw_count += len(data)
+                
+                # MEXC 응답 형식: [
+                #   [openTime, open, high, low, close, volume, closeTime, quoteVolume]
+                # ]
+                for row in data:
+                    try:
+                        ts_ms = int(row[0])
+                        dt = _parse_ts_ms(ts_ms)
+                        if dt:
+                            if raw_min_utc is None or dt < raw_min_utc:
+                                raw_min_utc = dt
+                            if raw_max_utc is None or dt > raw_max_utc:
+                                raw_max_utc = dt
+                        
+                        if ts_ms < start_ms or ts_ms > end_ms:
+                            continue
+                        
+                        all_rows.append(
+                            {
+                                "datetime_utc": dt,
+                                "open": float(row[1]),
+                                "high": float(row[2]),
+                                "low": float(row[3]),
+                                "close": float(row[4]),
+                                "volume": float(row[5]),
+                            }
+                        )
+                    except (IndexError, ValueError, TypeError):
+                        continue
+                
+                # 다음 페이지: 마지막 캔들의 시간 + 1ms
+                if data:
+                    last_ts = int(data[-1][0])
+                    next_start = last_ts + 1
+                    if next_start <= start_ms:
+                        break
+                    start_ms = next_start
+                else:
+                    break
+            
+            df = pd.DataFrame(all_rows, columns=OHLCV_COLUMNS)
+            df = df.drop_duplicates(subset=["datetime_utc"]).sort_values("datetime_utc").reset_index(drop=True) if not df.empty else df
+            
+            # 데이터가 없는 경우 추가 진단 정보
+            note = None
+            if len(df) == 0 and total_raw_count == 0:
+                now_utc = datetime.now(timezone.utc)
+                if start_dt > now_utc:
+                    note = f"시작 시간({start_dt.strftime('%Y-%m-%d %H:%M:%S')} UTC)이 현재 시간({now_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC)보다 미래입니다. 과거 날짜로 다시 시도해주세요."
+                elif end_dt > now_utc:
+                    note = f"종료 시간({end_dt.strftime('%Y-%m-%d %H:%M:%S')} UTC)이 현재 시간({now_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC)보다 미래입니다."
+                else:
+                    # 과거 데이터 조회 제한 확인
+                    days_ago = (now_utc - start_dt).days
+                    if days_ago > 30:
+                        note = (
+                            f"MEXC API는 최근 30일 이내의 데이터만 제공합니다.\n"
+                            f"요청한 시작 시간: {start_dt.strftime('%Y-%m-%d %H:%M:%S')} UTC ({days_ago}일 전)\n"
+                            f"API 제공 범위: 최근 30일 이내\n\n"
+                            f"더 오래된 과거 데이터가 필요하시면:\n"
+                            f"1. MEXC 웹사이트에서 CSV 다운로드 (2023년 1월 1일부터 제공)\n"
+                            f"   https://www.mexc.co/zh-CN/market-data-download\n"
+                            f"2. 다른 거래소 사용 (Binance, Bybit, OKX 등)"
+                        )
+                    else:
+                        note = f"MEXC API가 빈 응답을 반환했습니다. 거래 페어({symbol})가 MEXC에서 지원되는지 확인해주세요."
+            
+            self._set_last_debug(
+                exchange=self.name,
+                url=url,
+                params={"symbol": symbol, "interval": interval_str, "startTime": int(start_dt.timestamp() * 1000), "endTime": int(end_dt.timestamp() * 1000), "limit": 500},
+                http_status=last_http_status,
+                api_status="success" if len(df) > 0 else "no_data",
+                raw_count=total_raw_count,
+                raw_min_utc=raw_min_utc,
+                raw_max_utc=raw_max_utc,
+                requested_start_utc=start_dt,
+                requested_end_utc=end_dt,
+                filtered_count=len(df),
+                note=note if note else None,
+            )
+            
+            return df
+                    
+        except ValueError:
+            raise
+        except Exception as e:
+            self._set_last_debug(
+                exchange=self.name,
+                url=url,
+                params={"symbol": symbol, "interval": interval_str},
+                http_status=last_http_status,
+                error=str(e),
+                requested_start_utc=start_dt,
+                requested_end_utc=end_dt,
+            )
+            raise ValueError(
+                f"MEXC API 요청 중 오류 발생: {str(e)}. "
+                f"요청 파라미터: symbol={symbol}, interval={interval_str}"
+            )
 
 
 class GateioAPI(BaseExchangeAPI):
@@ -1794,7 +2223,6 @@ class HtxAPI(BaseExchangeAPI):
 
 # 등록된 거래소 목록 (앱에서 선택용)
 # 참고: 모든 거래소는 공개 Market Data API를 사용하므로 API key가 필요하지 않습니다.
-# HTX는 from/to 파라미터를 지원하지 않아 과거 데이터 조회가 제한되므로 제외됨.
 EXCHANGE_APIS = {
     "binance": BinanceAPI(),      # 공개 API (인증 불필요)
     # "kraken": KrakenAPI(),      # 제외: USDT 페어 지원 제한적 (주로 USD, EUR 사용)
@@ -1802,6 +2230,7 @@ EXCHANGE_APIS = {
     "okx": OKXAPI(),              # 공개 API (인증 불필요)
     "coinbase": CoinbaseAPI(),    # 공개 API (인증 불필요)
     # "kucoin": KuCoinAPI(),      # 제외: 과거 데이터 조회 제한 (약 1년 이상 전 데이터 반환 안됨)
+    "mexc": MEXCAPI(),            # 공개 API (인증 불필요) - 주의: API는 최근 30일 데이터만 제공
     # "gate": GateioAPI(),        # 제외: 현재 시점으로부터 최대 10,000개 캔들만 조회 가능 (1분봉 기준 약 7일)으로 과거 데이터 조회 불가
     # "htx": HtxAPI(),            # 제외: from/to 파라미터 미지원으로 과거 데이터 조회 불가
     "upbit": UpbitAPI(),          # 공개 API (인증 불필요)

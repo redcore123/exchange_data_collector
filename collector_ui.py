@@ -49,20 +49,29 @@ def fill_missing_ohlcv_gaps(
     else:
         return df
 
+    if "volume" not in df.columns:
+        df = df.copy()
+        df["volume"] = 0.0
+
+    df_sorted = df.sort_values("datetime_utc").reset_index(drop=True)
+    
+    # 실제 데이터의 첫 번째와 마지막 시간을 기준으로 expected_times 생성
+    if len(df_sorted) == 0:
+        return df
+    
+    actual_start = df_sorted["datetime_utc"].min()
+    actual_end = df_sorted["datetime_utc"].max()
+    
+    # 실제 데이터 범위 내에서만 gap을 채움
     expected_times = []
-    t = start_dt
-    while t <= end_dt:
+    t = actual_start
+    while t <= actual_end:
         expected_times.append(t)
         t = t + delta
 
     if not expected_times:
         return df
 
-    if "volume" not in df.columns:
-        df = df.copy()
-        df["volume"] = 0.0
-
-    df_sorted = df.sort_values("datetime_utc").reset_index(drop=True)
     expected_df = pd.DataFrame({"datetime_utc": expected_times})
     merged = expected_df.merge(
         df_sorted[
@@ -345,16 +354,59 @@ def show_page():
                 st.stop()
 
         if df.empty:
-            st.warning(
-                "조회된 데이터가 없습니다. (아래 '진단 정보'를 확인하세요.)"
-            )
             api_dbg = EXCHANGE_APIS.get(exchange_id)
             dbg = (
                 getattr(api_dbg, "last_debug", None) if api_dbg else None
             )
+            
+            # 로그에 상세 정보 기록
+            logger.warning(
+                f"데이터 없음: exchange={exchange_id}, base={coin_base}, quote={quote}, "
+                f"start={start_dt.isoformat()}, end={end_dt.isoformat()}, "
+                f"interval={interval_unit}:{interval_value}"
+            )
+            if dbg:
+                logger.warning(f"진단 정보: {dbg}")
+            
+            st.warning(
+                "조회된 데이터가 없습니다. (아래 '진단 정보'를 확인하세요.)"
+            )
+            
+            # 미래 날짜 체크
+            now_utc = datetime.now(timezone.utc)
+            if start_dt > now_utc:
+                st.error(
+                    f"⚠️ **시작 시간이 미래입니다!**\n\n"
+                    f"- 요청한 시작 시간: {start_dt.strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
+                    f"- 현재 시간: {now_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC\n\n"
+                    f"과거 날짜로 다시 시도해주세요."
+                )
+            elif end_dt > now_utc:
+                st.warning(
+                    f"⚠️ **종료 시간이 미래입니다.**\n\n"
+                    f"- 요청한 종료 시간: {end_dt.strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
+                    f"- 현재 시간: {now_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC\n\n"
+                    f"현재 시간까지만 데이터가 존재합니다."
+                )
+            
             if dbg:
                 with st.expander("진단 정보(마지막 API 호출)", expanded=True):
                     st.json(dbg)
+                    
+                    # 추가 힌트 제공
+                    note = dbg.get("note", "")
+                    if "빈 배열" in note or dbg.get("raw_count") == 0:
+                        st.info(
+                            "💡 **가능한 원인:**\n"
+                            "1. 해당 거래 페어가 거래소에서 지원되지 않음\n"
+                            "2. 요청한 기간에 거래 데이터가 없음 (상장 이전 기간 등)\n"
+                            "3. 거래소 API의 데이터 제공 범위 제한\n"
+                            "4. 미래 날짜를 요청함\n\n"
+                            "**해결 방법:**\n"
+                            "- 다른 거래 페어로 시도해보세요 (예: BTC/USDT, ETH/USDT)\n"
+                            "- 더 최근 날짜로 시도해보세요\n"
+                            "- 거래소 웹사이트에서 해당 페어가 존재하는지 확인해보세요"
+                        )
             st.stop()
 
         df = fill_missing_ohlcv_gaps(
