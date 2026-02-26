@@ -276,6 +276,12 @@ def show_page():
         )
         st.caption("종료시간")
 
+    if is_daily:
+        st.info(
+            "**일봉 선택 시:** 시작·종료 시간은 **09:00:00 (KST)** 로 고정됩니다. "
+            "09:00:00 KST로 조회하면 API에는 **00:00:00 (UTC)** 기준으로 요청되어, 대부분 거래소의 일봉 데이터(UTC 자정 기준)와 일치합니다."
+        )
+
     submitted = st.button(
         "데이터 수집 실행", type="primary", use_container_width=True
     )
