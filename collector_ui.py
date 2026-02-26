@@ -132,181 +132,213 @@ def show_page():
             exchanges[0][0] if exchanges else "binance"
         )
 
-    with st.form("exchange_data_collector_form"):
-        c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+    # 첫 번째 줄: 거래소, 코인, 결제통화
+    c1, c2, c3 = st.columns(3)
 
-        with c1:
-            exchange_options = [
-                f"{name} ({eid})" for eid, name in get_supported_exchanges()
-            ]
-            current_exchange_id = st.session_state.get(
-                "exchange_collector_exchange_id", ""
-            )
-            exchanges = get_supported_exchanges()
-            current_index = 0
-            for i, (eid, _) in enumerate(exchanges):
-                if eid == current_exchange_id:
-                    current_index = i
-                    break
-            widget_key = "exchange_collector_exchange"
-            if widget_key in st.session_state:
-                widget_selected = st.session_state[widget_key]
-                widget_eid = widget_selected.split(" (")[-1].rstrip(")")
-                valid_indices = [
-                    i
-                    for i, (eid, _) in enumerate(exchanges)
-                    if eid == widget_eid
-                ]
-                if valid_indices:
-                    current_index = valid_indices[0]
-            exchange_choice = st.selectbox(
-                "거래소",
-                exchange_options,
-                index=current_index,
-                label_visibility="collapsed",
-                key=widget_key,
-            )
-            exchange_id = exchange_choice.split(" (")[-1].rstrip(")")
-            st.caption("거래소")
-
-        with c2:
-            coin_base = (
-                st.text_input(
-                    "코인",
-                    value=st.session_state["exchange_collector_coin"],
-                    help="예: BTC, ETH",
-                    label_visibility="collapsed",
-                    key="exchange_collector_coin_input",
-                )
-                .strip()
-                .upper()
-                or "BTC"
-            )
-            st.caption("코인")
-
-        with c3:
-            quote_options = ["KRW", "USDT", "USD", "BUSD", "BTC"]
-            quote = st.selectbox(
-                "결제통화",
-                quote_options,
-                index=0,
-                label_visibility="collapsed",
-                key="exchange_collector_quote",
-            )
-            st.caption("결제통화")
-
-        with c4:
-            start_datetime_str = st.text_input(
-                "시작일시",
-                value=st.session_state["exchange_collector_start"],
-                help="예: 2024-12-06 08:00:00 (KST 기준)",
-                label_visibility="collapsed",
-                key="exchange_collector_start_input",
-            )
-            st.caption("시작일시 (KST)")
-
-        with c5:
-            end_datetime_str = st.text_input(
-                "종료일시",
-                value=st.session_state["exchange_collector_end"],
-                help="예: 2024-12-06 10:00:00 (KST 기준)",
-                label_visibility="collapsed",
-                key="exchange_collector_end_input",
-            )
-            st.caption("종료일시 (KST)")
-
-        with c6:
-            interval_type = st.selectbox(
-                "구간 단위",
-                ["일", "시", "분", "초"],
-                index=2,
-                label_visibility="collapsed",
-            )
-            st.caption("구간 단위")
-
-        with c7:
-            if interval_type == "초":
-                interval_value = st.number_input(
-                    "구간값(초)",
-                    min_value=1,
-                    max_value=60,
-                    value=60,
-                    step=1,
-                    label_visibility="collapsed",
-                )
-            else:
-                interval_value = st.number_input(
-                    "구간값",
-                    min_value=1,
-                    max_value=30,
-                    value=1,
-                    step=1,
-                    label_visibility="collapsed",
-                )
-            st.caption("구간값")
-
-        interval_unit = interval_unit_map[interval_type]
-        submitted = st.form_submit_button(
-            "데이터 수집 실행", type="primary", use_container_width=True
+    with c1:
+        exchange_options = [
+            f"{name} ({eid})" for eid, name in get_supported_exchanges()
+        ]
+        current_exchange_id = st.session_state.get(
+            "exchange_collector_exchange_id", ""
         )
+        exchanges = get_supported_exchanges()
+        current_index = 0
+        for i, (eid, _) in enumerate(exchanges):
+            if eid == current_exchange_id:
+                current_index = i
+                break
+        widget_key = "exchange_collector_exchange"
+        if widget_key in st.session_state:
+            widget_selected = st.session_state[widget_key]
+            widget_eid = widget_selected.split(" (")[-1].rstrip(")")
+            valid_indices = [
+                i
+                for i, (eid, _) in enumerate(exchanges)
+                if eid == widget_eid
+            ]
+            if valid_indices:
+                current_index = valid_indices[0]
+        exchange_choice = st.selectbox(
+            "거래소",
+            exchange_options,
+            index=current_index,
+            label_visibility="collapsed",
+            key=widget_key,
+        )
+        exchange_id = exchange_choice.split(" (")[-1].rstrip(")")
+        st.caption("거래소")
+
+    with c2:
+        coin_base = (
+            st.text_input(
+                "코인",
+                value=st.session_state.get("exchange_collector_coin", "BTC"),
+                help="예: BTC, ETH",
+                label_visibility="collapsed",
+                key="exchange_collector_coin_input",
+            )
+            .strip()
+            .upper()
+            or "BTC"
+        )
+        st.caption("코인")
+
+    with c3:
+        quote_options = ["KRW", "USDT", "USD", "BUSD", "BTC"]
+        quote = st.selectbox(
+            "결제통화",
+            quote_options,
+            index=1,  # USDT 기본값
+            label_visibility="collapsed",
+            key="exchange_collector_quote",
+        )
+        st.caption("결제통화")
+
+    # 두 번째 줄: 시작일, 시작시간, 종료일, 종료시간, 구간단위, 구간값
+    c4, c5, c6, c7, c8, c9 = st.columns(6)
+    
+    with c4:
+        start_date_str = st.text_input(
+            "시작일",
+            value=(pd.Timestamp.now(tz="Asia/Seoul") - pd.Timedelta(days=30)).strftime("%Y-%m-%d"),
+            help="예: 2024-07-22 (KST 기준)",
+            label_visibility="collapsed",
+            key="start_date_input",
+        )
+        st.caption("시작일 (KST)")
+    
+    with c8:
+        interval_type = st.selectbox(
+            "구간단위",
+            ["일", "시", "분", "초"],
+            index=0,
+            label_visibility="collapsed",
+            key="interval_type_select",
+        )
+        st.caption("구간단위")
+    
+    with c9:
+        if interval_type == "초":
+            interval_value = st.number_input(
+                "구간값(초)",
+                min_value=1,
+                max_value=60,
+                value=1,
+                step=1,
+                label_visibility="collapsed",
+                key="interval_value_input",
+            )
+        else:
+            interval_value = st.number_input(
+                "구간값",
+                min_value=1,
+                max_value=30,
+                value=1,
+                step=1,
+                label_visibility="collapsed",
+                key="interval_value_input",
+            )
+        st.caption("구간값")
+    
+    interval_unit = interval_unit_map[interval_type]
+    is_daily = (interval_type == "일")
+    
+    with c5:
+        start_time_str = st.text_input(
+            "시작시간",
+            value="09:00:00" if is_daily else "00:00:00",
+            help="일봉: 09:00:00 고정 (UTC 00:00 기준)",
+            label_visibility="collapsed",
+            key="start_time_input",
+            disabled=is_daily,
+        )
+        st.caption("시작시간")
+    
+    with c6:
+        end_date_str = st.text_input(
+            "종료일",
+            value=pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d"),
+            help="예: 2024-10-25 (KST 기준)",
+            label_visibility="collapsed",
+            key="end_date_input",
+        )
+        st.caption("종료일 (KST)")
+    
+    with c7:
+        end_time_str = st.text_input(
+            "종료시간",
+            value="09:00:00" if is_daily else "23:59:59",
+            help="일봉: 09:00:00 고정 (UTC 00:00 기준)",
+            label_visibility="collapsed",
+            key="end_time_input",
+            disabled=is_daily,
+        )
+        st.caption("종료시간")
+
+    submitted = st.button(
+        "데이터 수집 실행", type="primary", use_container_width=True
+    )
 
     if submitted:
-        st.session_state["exchange_collector_start"] = start_datetime_str
-        st.session_state["exchange_collector_end"] = end_datetime_str
         st.session_state["exchange_collector_coin"] = coin_base
         st.session_state["exchange_collector_exchange_id"] = exchange_id
 
     if submitted:
         try:
-            start_str_clean = (
-                start_datetime_str.strip()
-                .replace("T", " ")
-                .replace("Z", "")
-            )
-            end_str_clean = (
-                end_datetime_str.strip().replace("T", " ").replace("Z", "")
-            )
-            if len(start_str_clean) == 10:
-                start_str_clean += " 00:00:00"
-            elif len(start_str_clean) == 16:
-                start_str_clean += ":00"
-            if len(end_str_clean) == 10:
-                end_str_clean += " 23:59:59"
-            elif len(end_str_clean) == 16:
-                end_str_clean += ":59"
-
             kst = timezone(timedelta(hours=9))
-            start_dt_kst = None
-            end_dt_kst = None
-            for fmt in [
-                "%Y-%m-%d %H:%M:%S",
-                "%Y-%m-%d %H:%M",
-                "%Y/%m/%d %H:%M:%S",
-                "%Y/%m/%d %H:%M",
-            ]:
-                try:
-                    start_dt_kst = datetime.strptime(
-                        start_str_clean, fmt
-                    ).replace(tzinfo=kst)
-                    end_dt_kst = datetime.strptime(
-                        end_str_clean, fmt
-                    ).replace(tzinfo=kst)
-                    break
-                except ValueError:
-                    continue
+            
+            # 일봉: 날짜 + 09:00:00 KST 고정 (= UTC 00:00:00)
+            if is_daily:
+                start_str_clean = start_date_str.strip()
+                end_str_clean = end_date_str.strip()
+                
+                # 날짜 파싱 (KST 09:00:00 고정)
+                for fmt in ["%Y-%m-%d", "%Y/%m/%d"]:
+                    try:
+                        start_dt_kst = datetime.strptime(start_str_clean, fmt).replace(hour=9, minute=0, second=0, tzinfo=kst)
+                        end_dt_kst = datetime.strptime(end_str_clean, fmt).replace(hour=9, minute=0, second=0, tzinfo=kst)
+                        break
+                    except ValueError:
+                        continue
+                else:
+                    raise ValueError("날짜 형식을 인식할 수 없습니다. 예: 2024-07-22")
+            
+            # 분봉/시봉: 날짜 + 시간 사용
+            else:
+                start_datetime_str = f"{start_date_str.strip()} {start_time_str.strip()}"
+                end_datetime_str = f"{end_date_str.strip()} {end_time_str.strip()}"
+                
+                # 날짜+시간 파싱
+                for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M"]:
+                    try:
+                        start_dt_kst = datetime.strptime(start_datetime_str, fmt).replace(tzinfo=kst)
+                        end_dt_kst = datetime.strptime(end_datetime_str, fmt).replace(tzinfo=kst)
+                        break
+                    except ValueError:
+                        continue
+                else:
+                    raise ValueError("날짜/시간 형식을 인식할 수 없습니다. 예: 2024-07-22 09:00:00")
 
-            if start_dt_kst is None or end_dt_kst is None:
-                raise ValueError(
-                    "날짜 형식을 인식할 수 없습니다. 예: 2024-12-06 08:00:00"
-                )
-
+            # KST를 UTC로 변환
             start_dt = start_dt_kst.astimezone(timezone.utc)
             end_dt = end_dt_kst.astimezone(timezone.utc)
-            st.info(
-                f"입력 시간 (KST) → API 호출 시간 (UTC): "
-                f"{start_dt_kst.strftime('%Y-%m-%d %H:%M:%S')} → {start_dt.strftime('%Y-%m-%d %H:%M:%S')} / "
-                f"{end_dt_kst.strftime('%Y-%m-%d %H:%M:%S')} → {end_dt.strftime('%Y-%m-%d %H:%M:%S')}"
-            )
+            
+            if is_daily:
+                st.info(
+                    f"**일봉 데이터 수집 (KST 09:00 기준)**\n\n"
+                    f"- 시작: {start_dt_kst.strftime('%Y-%m-%d %H:%M:%S')} KST → {start_dt.strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
+                    f"- 종료: {end_dt_kst.strftime('%Y-%m-%d %H:%M:%S')} KST → {end_dt.strftime('%Y-%m-%d %H:%M:%S')} UTC\n\n"
+                    f"**참고**: 일봉은 KST 09:00 (= UTC 00:00) 기준으로 수집됩니다. "
+                    f"CSV의 `datetime_kst`는 `2024-07-22 09:00:00` 형태로 저장되며, "
+                    f"이는 사건 데이터와 정확히 매칭됩니다."
+                )
+            else:
+                st.info(
+                    f"**입력 시간 (KST) → API 호출 시간 (UTC)**\n\n"
+                    f"- 시작: {start_dt_kst.strftime('%Y-%m-%d %H:%M:%S')} KST → {start_dt.strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
+                    f"- 종료: {end_dt_kst.strftime('%Y-%m-%d %H:%M:%S')} KST → {end_dt.strftime('%Y-%m-%d %H:%M:%S')} UTC"
+                )
         except Exception as e:
             st.error(f"날짜/시간 입력 오류: {e}")
             st.stop()
