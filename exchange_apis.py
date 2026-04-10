@@ -75,6 +75,10 @@ class BaseExchangeAPI(ABC):
             # 진단 정보는 부가 기능이므로 실패해도 무시
             pass
 
+    def interval_user_hint(self) -> Optional[str]:
+        """거래소별 캔들 구간 제한 등 사용자 안내 문구. None이면 UI에서 배너·대체 문구 없음."""
+        return None
+
 
 class BinanceAPI(BaseExchangeAPI):
     """Binance 공개 API. 데이터 API: data-api.binance.vision."""
@@ -1606,6 +1610,187 @@ class KorbitAPI(BaseExchangeAPI):
             raise
 
 
+class GopaxAPI(BaseExchangeAPI):
+    """고팍스 공개 API. 차트(캔들): `GET /trading-pairs/<TradingPair>/candles`.
+
+    - 거래쌍: `BASE-QUOTE` (예: BTC-KRW)
+    - interval(분): 문서상 1, 5, 30, 1440(일봉)만 허용
+    - 응답 각 봉: `[구간시작(ms), low, high, open, close, base_volume]`
+    - 한 요청당 최대 1024개(limit); 더 긴 구간은 페이지네이션
+    """
+
+    name = "Gopax"
+    base_url = "https://api.gopax.co.kr"
+
+    INTERVAL_MINUTES = {
+        ("minute", 1): 1,
+        ("minute", 5): 5,
+        ("minute", 30): 30,
+        ("day", 1): 1440,
+    }
+
+    def get_interval_param(self, interval_unit: str, interval_value: int) -> Optional[int]:
+        return self.INTERVAL_MINUTES.get((interval_unit, interval_value))
+
+    def get_symbol(self, base: str, quote: str) -> str:
+        return f"{base.upper()}-{quote.upper()}"
+
+    def interval_user_hint(self) -> Optional[str]:
+        return (
+            "Gopax 공개 캔들 API는 **1분·5분·30분·1일** 봉만 지원합니다. "
+            "구간 단위는 「분」에서 값 1·5·30, 또는 「일」에서 값 1을 선택하세요."
+        )
+
+    def fetch_klines(
+        self,
+        base: str,
+        quote: str,
+        start_dt: datetime,
+        end_dt: datetime,
+        interval_unit: str,
+        interval_value: int,
+    ) -> pd.DataFrame:
+        interval_min = self.get_interval_param(interval_unit, interval_value)
+        if interval_min is None:
+            self._set_last_debug(
+                exchange=self.name,
+                error=f"지원하지 않는 구간: {interval_unit} {interval_value} (Gopax는 분봉 1/5/30, 일봉만)",
+                requested_start_utc=start_dt,
+                requested_end_utc=end_dt,
+            )
+            return pd.DataFrame(columns=OHLCV_COLUMNS)
+
+        pair = self.get_symbol(base, quote)
+        start_ms = int(start_dt.timestamp() * 1000)
+        end_ms = int(end_dt.timestamp() * 1000)
+        interval_ms = interval_min * 60 * 1000
+        url = f"{self.base_url}/trading-pairs/{pair}/candles"
+
+        all_rows: list[dict] = []
+        cursor_ms = start_ms
+        raw_min_utc = None
+        raw_max_utc = None
+        last_http_status = None
+        last_params: dict = {}
+        max_pages = 50000
+        page = 0
+
+        while cursor_ms < end_ms and page < max_pages:
+            page += 1
+            params = {
+                "start": cursor_ms,
+                "end": end_ms,
+                "interval": interval_min,
+                "limit": 1024,
+            }
+            last_params = dict(params)
+            try:
+                r = requests.get(url, params=params, timeout=60)
+                last_http_status = r.status_code
+                r.raise_for_status()
+                data = r.json()
+            except Exception as e:
+                self._set_last_debug(
+                    exchange=self.name,
+                    url=url,
+                    params=last_params,
+                    http_status=last_http_status,
+                    error=str(e),
+                    requested_start_utc=start_dt,
+                    requested_end_utc=end_dt,
+                )
+                raise
+
+            if isinstance(data, dict) and data.get("errorMessage"):
+                msg = str(data.get("errorMessage", "Gopax API 오류"))
+                self._set_last_debug(
+                    exchange=self.name,
+                    url=url,
+                    params=last_params,
+                    http_status=last_http_status,
+                    api_status="error",
+                    error=msg,
+                    requested_start_utc=start_dt,
+                    requested_end_utc=end_dt,
+                )
+                raise ValueError(
+                    f"Gopax API 오류: {msg}. 거래쌍({pair}) 및 interval={interval_min}분을 확인해주세요."
+                )
+
+            if not isinstance(data, list):
+                self._set_last_debug(
+                    exchange=self.name,
+                    url=url,
+                    params=last_params,
+                    http_status=last_http_status,
+                    api_status="invalid_response",
+                    error=f"예상 list, 실제 {type(data).__name__}",
+                    requested_start_utc=start_dt,
+                    requested_end_utc=end_dt,
+                )
+                break
+
+            if not data:
+                break
+
+            for row in data:
+                if not isinstance(row, (list, tuple)) or len(row) < 6:
+                    continue
+                ts_ms = int(row[0])
+                if ts_ms < start_ms or ts_ms > end_ms:
+                    continue
+                # [시간, low, high, open, close, volume]
+                dt = _parse_ts_ms(ts_ms)
+                if dt:
+                    if raw_min_utc is None or dt < raw_min_utc:
+                        raw_min_utc = dt
+                    if raw_max_utc is None or dt > raw_max_utc:
+                        raw_max_utc = dt
+                all_rows.append(
+                    {
+                        "datetime_utc": dt,
+                        "open": float(row[3]),
+                        "high": float(row[2]),
+                        "low": float(row[1]),
+                        "close": float(row[4]),
+                        "volume": float(row[5]),
+                    }
+                )
+
+            last_ts = int(data[-1][0])
+            if last_ts < cursor_ms:
+                break
+            next_cursor = last_ts + interval_ms
+            if next_cursor <= cursor_ms:
+                break
+            if len(data) < 1024:
+                break
+            cursor_ms = next_cursor
+
+        df = pd.DataFrame(all_rows, columns=OHLCV_COLUMNS)
+        df = (
+            df.drop_duplicates(subset=["datetime_utc"])
+            .sort_values("datetime_utc")
+            .reset_index(drop=True)
+            if not df.empty
+            else df
+        )
+        self._set_last_debug(
+            exchange=self.name,
+            url=url,
+            params=last_params,
+            http_status=last_http_status,
+            api_status="success" if len(df) > 0 else "no_data",
+            raw_count=len(all_rows),
+            raw_min_utc=raw_min_utc,
+            raw_max_utc=raw_max_utc,
+            requested_start_utc=start_dt,
+            requested_end_utc=end_dt,
+            filtered_count=len(df),
+        )
+        return df
+
+
 # --- 해외 거래소 추가: Gate.io, HTX, MEXC ---
 
 
@@ -2237,6 +2422,7 @@ EXCHANGE_APIS = {
     "bithumb": BithumbAPI(),      # 공개 API (인증 불필요)
     "coinone": CoinoneAPI(),     # 공개 API (인증 불필요)
     "korbit": KorbitAPI(),        # 공개 API (인증 불필요)
+    "gopax": GopaxAPI(),          # 공개 API (인증 불필요) — 캔들 interval: 1/5/30분, 1일(1440분)
 }
 
 

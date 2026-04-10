@@ -1,3 +1,8 @@
 logs/20260224_exchange_collector.log
 logs/20260225_exchange_collector.log
 logs/20260226_exchange_collector.log
+__pycache__/collector_ui.cpython-311.pyc
+__pycache__/exchange_apis.cpython-311.pyc
+logs/20260331_exchange_collector.log
+logs/20260410_exchange_collector.log
+__pycache__/collector_ui.cpython-311.pyc

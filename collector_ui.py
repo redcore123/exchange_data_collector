@@ -195,6 +195,11 @@ def show_page():
         )
         st.caption("결제통화")
 
+    _api_for_hint = EXCHANGE_APIS.get(exchange_id)
+    _hint = _api_for_hint.interval_user_hint() if _api_for_hint else None
+    if _hint:
+        st.info(_hint)
+
     # 두 번째 줄: 시작일, 시작시간, 종료일, 종료시간, 구간단위, 구간값
     c4, c5, c6, c7, c8, c9 = st.columns(6)
     
@@ -357,10 +362,17 @@ def show_page():
         if api and not api.get_interval_param(
             interval_unit, int(interval_value)
         ):
-            st.warning(
-                f"선택한 거래소({api.name})에서 해당 구간({interval_type} {interval_value})을 지원하지 않습니다. "
-                "다른 구간(예: 1분, 5분, 1시간, 1일)을 선택해 보세요."
-            )
+            specific = api.interval_user_hint()
+            if specific:
+                st.warning(
+                    f"선택한 거래소(**{api.name}**)에서 해당 구간(**{interval_type} {interval_value}**)은 지원하지 않습니다.\n\n"
+                    + specific
+                )
+            else:
+                st.warning(
+                    f"선택한 거래소({api.name})에서 해당 구간({interval_type} {interval_value})을 지원하지 않습니다. "
+                    "다른 구간(예: 1분, 5분, 1시간, 1일)을 선택해 보세요."
+                )
             st.stop()
 
         with st.spinner(f"{exchange_id}에서 데이터 수집 중..."):
