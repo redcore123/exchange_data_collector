@@ -19,6 +19,7 @@ from streamlit_option_menu import option_menu
 
 from collector_ui import show_page as show_exchange_collector
 from price_data_collector_ui import show_page as show_price_collector
+from compare_exchange_ui import show_page as show_compare_exchange
 
 st.set_page_config(
     page_title="가상자산 시세 데이터 수집",
@@ -32,13 +33,16 @@ with st.sidebar:
         options=[
             "타거래소 데이터 수집",
             "원화가치 환산용 시세 데이터 수집",
+            "타거래소 가격 비교",
         ],
-        icons=["globe", "graph-up"],
+        icons=["globe", "graph-up", "bar-chart"],
         default_index=0,
         menu_icon="collection",
     )
 
 if page == "원화가치 환산용 시세 데이터 수집":
     show_price_collector()
+elif page == "타거래소 가격 비교":
+    show_compare_exchange()
 else:
     show_exchange_collector()
