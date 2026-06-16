@@ -1147,6 +1147,14 @@ class BithumbAPI(BaseExchangeAPI):
         start_ts = int(start_dt.timestamp() * 1000)
         end_ts = int(end_dt.timestamp() * 1000)
 
+        # start_dt가 캔들 경계(분/일) 중간에 있으면 해당 캔들이 필터링으로 누락된다.
+        # interval_ms 단위로 내림하여 경계 캔들을 포함 범위에 넣는다.
+        if endpoint == "days":
+            _interval_ms = 24 * 60 * 60 * 1000
+        else:
+            _interval_ms = int(unit) * 60 * 1000
+        start_ts = (start_ts // _interval_ms) * _interval_ms
+
         if endpoint == "days":
             url = f"{self.base_url}/candles/days"
         else:
@@ -1156,7 +1164,12 @@ class BithumbAPI(BaseExchangeAPI):
         # 빗썸 API: to = "마지막 캔들 시각(exclusive). 기본적으로 KST 기준 시간" (공식 문서)
         # → UTC를 KST로 변환하여 전달
         kst = timezone(timedelta(hours=9))
-        to_dt_kst = end_dt.astimezone(kst)  # UTC → KST 변환
+        # end_dt가 캔들 경계 중간이면 Bithumb API가 해당 캔들을 반환하지 않는다.
+        # (예: to=09:00:17 → 09:00 캔들 누락). 항상 다음 경계로 올림해서 전달한다.
+        _end_ts_floor = (end_ts // _interval_ms) * _interval_ms
+        to_dt_kst = datetime.fromtimestamp(
+            (_end_ts_floor + _interval_ms) / 1000, tz=timezone.utc
+        ).astimezone(kst)
         start_dt_kst = start_dt.astimezone(kst)
         raw_total = 0
         raw_min_utc = None
@@ -1214,7 +1227,10 @@ class BithumbAPI(BaseExchangeAPI):
                 if raw_max_utc is None or dt > raw_max_utc:
                     raw_max_utc = dt
                 # 필터링: 요청 기간 내 데이터만 추가
-                ts_ms = int(item.get("timestamp") or int(dt.timestamp() * 1000))
+                # item["timestamp"]는 캔들의 마지막 체결 시각(ms)이므로 캔들 시작 시각보다
+                # 늦다. 분 경계 미만의 짧은 구간에서 end_ts를 초과해 캔들이 제외되는 문제
+                # 를 막기 위해 candle_date_time_kst 에서 파싱한 dt(캔들 시작 시각)를 사용.
+                ts_ms = int(dt.timestamp() * 1000)
                 if ts_ms < start_ts or ts_ms > end_ts:
                     continue
                 all_rows.append(
