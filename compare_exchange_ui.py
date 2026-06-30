@@ -302,6 +302,26 @@ def show_page():
     start_dt_utc = start_dt_kst.astimezone(timezone.utc)
     end_dt_utc = end_dt_kst.astimezone(timezone.utc)
 
+    # ── 구간 경계 정렬: 혐의기간이 구간 단위 경계 중간에 있으면 봉이 누락된다. ──
+    # 시작은 내림(floor), 종료는 올림(ceil)하여 경계 봉을 포함한다.
+    _iv_sec = {"second": 1, "minute": 60, "hour": 3600, "day": 86400}
+    _interval_ms = int(interval_value) * _iv_sec.get(interval_unit, 60) * 1000
+    _start_ms_raw = int(start_dt_utc.timestamp() * 1000)
+    _end_ms_raw = int(end_dt_utc.timestamp() * 1000)
+    _start_ms_aligned = (_start_ms_raw // _interval_ms) * _interval_ms
+    _end_ms_floor = (_end_ms_raw // _interval_ms) * _interval_ms
+    _end_ms_aligned = _end_ms_floor if _end_ms_floor == _end_ms_raw else _end_ms_floor + _interval_ms
+    if _start_ms_aligned != _start_ms_raw or _end_ms_aligned != _end_ms_raw:
+        start_dt_utc = datetime.fromtimestamp(_start_ms_aligned / 1000, tz=timezone.utc)
+        end_dt_utc   = datetime.fromtimestamp(_end_ms_aligned   / 1000, tz=timezone.utc)
+        st.info(
+            f"입력 혐의기간({start_dt_kst.strftime('%Y-%m-%d %H:%M:%S')} ~ "
+            f"{end_dt_kst.strftime('%Y-%m-%d %H:%M:%S')} KST)이 {interval_label} 경계 중간에 걸쳐 있습니다. "
+            f"해당 봉을 누락 없이 포함하기 위해 "
+            f"**{start_dt_utc.astimezone(KST).strftime('%Y-%m-%d %H:%M:%S')} ~ "
+            f"{end_dt_utc.astimezone(KST).strftime('%Y-%m-%d %H:%M:%S')} KST**로 확장하여 조회합니다."
+        )
+
     # ── KRW/USDT 환산 기준가 조회 (USDT 거래소 포함 시) ──────────────────────
     krw_usdt_rate = None
     needs_rate = incident_quote == "USDT" or any(
@@ -447,8 +467,9 @@ def show_page():
             _fmt_krw_with_pct(r["_krw_high"], incident_krw) if is_compare
             else (_fmt_price(r["_krw_high"]) if r["_krw_high"] is not None else "-")
         )
+        구분_label = "비교군(비교군 대비 사건발생)" if is_compare else r["구분"]
         display_price_rows.append({
-            "구분": r["구분"],
+            "구분": 구분_label,
             "거래소": r["거래소"],
             "결제통화": r["결제통화"],
             "최고가": (f"{_fmt_price(r['_high_raw'])} {r['결제통화']}"
