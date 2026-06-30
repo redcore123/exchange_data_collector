@@ -422,23 +422,38 @@ def show_page():
     price_df = pd.DataFrame(price_rows)
     compare_valid = price_df[(price_df["구분"] == "비교군") & price_df["_krw_high"].notna()]
     incident_valid = price_df[(price_df["구분"] == "사건발생") & price_df["_krw_high"].notna()]
+    incident_krw = incident_valid.iloc[0]["_krw_high"] if not incident_valid.empty else None
     avg_compare_krw = compare_valid["_krw_high"].mean() if not compare_valid.empty else None
     pct = (
-        incident_valid.iloc[0]["_krw_high"] / avg_compare_krw * 100
-        if avg_compare_krw and avg_compare_krw > 0 and not incident_valid.empty
+        incident_krw / avg_compare_krw * 100
+        if avg_compare_krw and avg_compare_krw > 0 and incident_krw is not None
         else None
     )
+
+    def _fmt_krw_with_pct(krw_val, vs_incident_krw):
+        """원화환산 최고가 + 사건발생 대비(%) 괄호 표시."""
+        if krw_val is None:
+            return "-"
+        price_str = _fmt_price(krw_val)
+        if vs_incident_krw is not None and krw_val and krw_val > 0:
+            return f"{price_str} ({vs_incident_krw / krw_val * 100:,.2f}%)"
+        return price_str
 
     display_price_rows = []
     for _, r in price_df.iterrows():
         is_incident = r["구분"] == "사건발생"
+        is_compare = r["구분"] == "비교군"
+        krw_cell = (
+            _fmt_krw_with_pct(r["_krw_high"], incident_krw) if is_compare
+            else (_fmt_price(r["_krw_high"]) if r["_krw_high"] is not None else "-")
+        )
         display_price_rows.append({
             "구분": r["구분"],
             "거래소": r["거래소"],
             "결제통화": r["결제통화"],
             "최고가": (f"{_fmt_price(r['_high_raw'])} {r['결제통화']}"
                       if r["_high_raw"] is not None else "-"),
-            "원화환산 최고가 (KRW)": _fmt_price(r["_krw_high"]) if r["_krw_high"] is not None else "-",
+            "원화환산 최고가 (KRW)": krw_cell,
             "비교군 평균 대비(%)": f"{pct:,.2f}%" if is_incident and pct is not None else "-",
         })
 
