@@ -252,11 +252,10 @@ def show_page():
         st.caption("종료시간 (KST)")
     with c8:
         interval_type = st.selectbox(
-            "구간단위", ["일", "시", "분", "초"], index=2, key="cmp_interval_type"
+            "구간단위", ["일", "시", "분"], index=2, key="cmp_interval_type"
         )
         st.caption("구간단위")
     with c9:
-        max_iv = 60 if interval_type == "초" else 30
         interval_value = st.number_input(
             "구간값", min_value=1, max_value=max_iv, value=1, step=1, key="cmp_interval_value"
         )
@@ -295,23 +294,29 @@ def show_page():
         st.error(f"날짜/시간 입력 오류: {e}")
         st.stop()
 
-    if start_dt_kst >= end_dt_kst:
-        st.error("시작일시가 종료일시보다 이전이어야 합니다.")
+    if start_dt_kst > end_dt_kst:
+        st.error("시작일시가 종료일시보다 이후일 수 없습니다.")
         st.stop()
 
     start_dt_utc = start_dt_kst.astimezone(timezone.utc)
     end_dt_utc = end_dt_kst.astimezone(timezone.utc)
 
-    # ── 구간 경계 정렬: 혐의기간이 구간 단위 경계 중간에 있으면 봉이 누락된다. ──
-    # 시작은 내림(floor), 종료는 올림(ceil)하여 경계 봉을 포함한다.
-    _iv_sec = {"second": 1, "minute": 60, "hour": 3600, "day": 86400}
+    # ── 구간 경계 정렬: 혐의기간이 구간 단위 경계 중간에 있거나 시작=종료이면 봉이 누락된다. ──
+    # 시작은 내림(floor), 종료는 항상 다음 경계(floor+1구간)로 올림하여 경계 봉을 포함한다.
+    _iv_sec = {"minute": 60, "hour": 3600, "day": 86400}
     _interval_ms = int(interval_value) * _iv_sec.get(interval_unit, 60) * 1000
     _start_ms_raw = int(start_dt_utc.timestamp() * 1000)
-    _end_ms_raw = int(end_dt_utc.timestamp() * 1000)
+    _end_ms_raw   = int(end_dt_utc.timestamp() * 1000)
     _start_ms_aligned = (_start_ms_raw // _interval_ms) * _interval_ms
-    _end_ms_floor = (_end_ms_raw // _interval_ms) * _interval_ms
-    _end_ms_aligned = _end_ms_floor if _end_ms_floor == _end_ms_raw else _end_ms_floor + _interval_ms
-    if _start_ms_aligned != _start_ms_raw or _end_ms_aligned != _end_ms_raw:
+    _end_ms_floor     = (_end_ms_raw   // _interval_ms) * _interval_ms
+    # 시작=종료(단일 시각)이거나 경계 중간에 걸린 경우 확장
+    _needs_expand = (
+        _start_ms_aligned != _start_ms_raw
+        or _end_ms_floor != _end_ms_raw
+        or _start_ms_raw == _end_ms_raw
+    )
+    if _needs_expand:
+        _end_ms_aligned = _end_ms_floor + _interval_ms
         start_dt_utc = datetime.fromtimestamp(_start_ms_aligned / 1000, tz=timezone.utc)
         end_dt_utc   = datetime.fromtimestamp(_end_ms_aligned   / 1000, tz=timezone.utc)
         st.info(
