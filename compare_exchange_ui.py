@@ -474,7 +474,6 @@ def show_page():
 
     display_price_rows = []
     for _, r in price_df.iterrows():
-        is_incident = r["구분"] == "사건발생"
         is_compare = r["구분"] == "비교군"
         krw_cell = (
             _fmt_krw_with_pct(r["_krw_high"], incident_krw) if is_compare
@@ -488,17 +487,19 @@ def show_page():
             "최고가": (f"{_fmt_price(r['_high_raw'])} {r['결제통화']}"
                       if r["_high_raw"] is not None else "-"),
             "원화환산 최고가 (KRW)": krw_cell,
-            "비교군 평균 대비(%)": f"{pct:,.2f}%" if is_incident and pct is not None else "-",
         })
 
     if avg_compare_krw is not None:
+        avg_krw_cell = (
+            f"{_fmt_price(avg_compare_krw)} ({pct:,.2f}%)" if pct is not None
+            else _fmt_price(avg_compare_krw)
+        )
         display_price_rows.append({
-            "구분": "비교군 평균",
+            "구분": "비교군 평균(비교군 평균 대비 사건발생)",
             "거래소": "-",
             "결제통화": "-",
             "최고가": "-",
-            "원화환산 최고가 (KRW)": _fmt_price(avg_compare_krw),
-            "비교군 평균 대비(%)": "-",
+            "원화환산 최고가 (KRW)": avg_krw_cell,
         })
 
     st.dataframe(pd.DataFrame(display_price_rows), use_container_width=True, hide_index=True)
