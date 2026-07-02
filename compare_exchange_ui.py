@@ -377,6 +377,14 @@ def show_page():
                     eid, coin, quote, start_dt_utc, end_dt_utc,
                     interval_unit, int(interval_value)
                 )
+                # 확장된 구간으로 조회했으므로 원래 혐의기간에 속하는 봉만 유지
+                # 캔들 시작 시각이 [floor(원래시작), floor(원래종료)] 범위인 행만 보존
+                if df is not None and not df.empty and "datetime_utc" in df.columns:
+                    df = df[df["datetime_utc"].apply(
+                        lambda dt: _start_ms_aligned
+                                   <= int(dt.timestamp() * 1000)
+                                   <= _end_ms_floor
+                    )].reset_index(drop=True)
             except Exception as e:
                 logger.error(f"{eid} 조회 오류: {e}", exc_info=True)
                 entry["error"] = str(e)
