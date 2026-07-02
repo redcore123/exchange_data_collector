@@ -257,7 +257,7 @@ def show_page():
         st.caption("구간단위")
     with c9:
         interval_value = st.number_input(
-            "구간값", min_value=1, max_value=max_iv, value=1, step=1, key="cmp_interval_value"
+            "구간값", min_value=1, max_value=30, value=1, step=1, key="cmp_interval_value"
         )
         st.caption("구간값")
 
