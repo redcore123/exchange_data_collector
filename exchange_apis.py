@@ -140,6 +140,19 @@ class BinanceAPI(BaseExchangeAPI):
                 "limit": 1000,
             }
             r = requests.get(url, params=params, timeout=30)
+            if r.status_code == 400:
+                try:
+                    err = r.json()
+                except Exception:
+                    err = {}
+                code = err.get("code")
+                msg  = err.get("msg", r.text[:200])
+                if code == -1121:
+                    raise ValueError(
+                        f"Binance에 상장되지 않은 거래 페어입니다: {symbol} ({base}/{quote}). "
+                        f"해당 코인이 Binance Spot 시장에 상장되어 있는지 확인해주세요."
+                    )
+                raise ValueError(f"Binance API 오류 (400): {msg}")
             r.raise_for_status()
             data = r.json()
             if not data:
@@ -375,6 +388,15 @@ class BybitAPI(BaseExchangeAPI):
             r.raise_for_status()
             data = r.json()
             if data.get("retCode") != 0:
+                ret_code = data.get("retCode")
+                ret_msg  = data.get("retMsg", "")
+                if not all_rows:
+                    if ret_code in (10001, 10002) or "symbol" in ret_msg.lower() or "invalid" in ret_msg.lower():
+                        raise ValueError(
+                            f"Bybit에 상장되지 않은 거래 페어입니다: {symbol} ({base}/{quote}). "
+                            f"오류: {ret_msg} (코드: {ret_code})"
+                        )
+                    raise ValueError(f"Bybit API 오류: {ret_msg} (코드: {ret_code})")
                 break
             lst = data.get("result", {}).get("list", [])
             if not lst:
@@ -462,6 +484,15 @@ class OKXAPI(BaseExchangeAPI):
             r.raise_for_status()
             data = r.json()
             if data.get("code") != "0":
+                code = data.get("code", "")
+                msg  = data.get("msg", "")
+                if not all_rows:
+                    if code in ("51001", "51000") or "instrument" in msg.lower() or "does not exist" in msg.lower():
+                        raise ValueError(
+                            f"OKX에 상장되지 않은 거래 페어입니다: {inst_id} ({base}/{quote}). "
+                            f"오류: {msg} (코드: {code})"
+                        )
+                    raise ValueError(f"OKX API 오류: {msg} (코드: {code})")
                 break
             lst = data.get("data", [])
             if not lst:

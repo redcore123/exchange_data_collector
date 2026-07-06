@@ -390,14 +390,27 @@ def show_page():
                                    <= int(dt.timestamp() * 1000)
                                    <= _end_ms_floor
                     )].reset_index(drop=True)
+            except ValueError as e:
+                # 미상장·미지원 페어 등 예상 가능한 조건 (사용자 안내 수준)
+                logger.warning(f"{eid} 페어 미지원/미상장: {e}")
+                entry["error"] = str(e)
+                st.warning(f"{name} ({quote}): {e}")
+                continue
             except Exception as e:
+                # 네트워크·타임아웃 등 예상치 못한 오류
                 logger.error(f"{eid} 조회 오류: {e}", exc_info=True)
                 entry["error"] = str(e)
-                st.warning(f"{name} ({quote}) 수집 오류: {e}")
+                st.error(
+                    f"{name} ({quote}) API 통신 오류가 발생했습니다. "
+                    f"잠시 후 다시 시도하거나 관리자에게 문의해주세요. (상세: {e})"
+                )
                 continue
         if df is None or df.empty:
             entry["error"] = "데이터 없음"
-            st.warning(f"{name} ({quote}): 혐의기간 내 데이터가 없습니다.")
+            st.warning(
+                f"{name} ({quote}): 혐의기간 내 거래 데이터가 없습니다. "
+                f"해당 코인이 이 거래소에 상장되어 있는지, 또는 해당 기간에 거래가 있었는지 확인해주세요."
+            )
         else:
             entry["df"] = df
 
